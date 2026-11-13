@@ -32,15 +32,19 @@ if (!platform) {
 // which publishes its assets under the same names. The patches are not applied there,
 // so anything they add is missing: see the note on electronBinary in bin.ts.
 const stock = platform === "win32-x64";
+const patched = [
+  `https://github.com/zenbu-labs/terminal-browser/releases/download/electron-v${version}`,
+  `https://github.com/zenbu-labs/pixel/releases/download/electron-v${version}`,
+];
 const mirrors = process.env.PIXEL_ELECTRON_MIRROR
   ? [process.env.PIXEL_ELECTRON_MIRROR]
   : stock
     ? [`https://github.com/electron/electron/releases/download/v${version}`]
-    : [
-        `https://github.com/zenbu-labs/terminal-browser/releases/download/electron-v${version}`,
-        `https://github.com/zenbu-labs/pixel/releases/download/electron-v${version}`,
-      ];
+    : patched;
 let mirror = mirrors[0];
+// The source calls APIs the patches add, so declarations always come from a patched
+// release even when the binary does not. Upstream's own electron.d.ts would not compile.
+const typeMirrors = stock && !process.env.PIXEL_ELECTRON_MIRROR ? patched : mirrors;
 const zipName = `electron-v${version}-${platform}.zip`;
 
 async function fetchBytes(url) {
@@ -91,20 +95,33 @@ if (!shasums) {
   );
   process.exit(1);
 }
-const listed = (name) =>
-  shasums
+const listedIn = (text, name) =>
+  text
     .split("\n")
     .map((line) => line.trim().split(/\s+/))
     .find((columns) => columns[1] === `*${name}` || columns[1] === name)?.[0];
+const listed = (name) => listedIn(shasums, name);
+
+let typeMirror = mirror;
+let typeShasums = shasums;
+if (typeMirrors !== mirrors) {
+  for (const candidate of typeMirrors) {
+    try {
+      typeShasums = (await fetchBytes(`${candidate}/SHASUMS256.txt`)).toString("utf8");
+      typeMirror = candidate;
+      break;
+    } catch {}
+  }
+}
 
 // Types: generated from the patched docs by the same build as the binary. Older
 // releases predate that asset, so fall back to upstream's types for the version.
-const typesSha = listed("electron.d.ts");
+const typesSha = listedIn(typeShasums, "electron.d.ts");
 const wantedSource = typesSha ? `${version} ${typesSha}` : `${version} npm`;
 if (readMarker(typesMarker) !== wantedSource || !fs.existsSync(typesFile)) {
   let bytes;
   if (typesSha) {
-    bytes = await fetchBytes(`${mirror}/electron.d.ts`);
+    bytes = await fetchBytes(`${typeMirror}/electron.d.ts`);
     if (sha256(bytes) !== typesSha) {
       process.stderr.write(`pixel: electron.d.ts does not match SHASUMS256.txt\n`);
       process.exit(1);

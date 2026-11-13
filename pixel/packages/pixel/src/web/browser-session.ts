@@ -153,12 +153,16 @@ export function configureBrowserSession(target: Session): void {
     const gate = contents ? permissionGates.get(contents.id) : undefined;
     if (!gate || !contents) return false;
     const mediaType = details.mediaType;
-    return gate.check({
+    const answer = gate.check({
       permission,
       origin: originOf(details.securityOrigin) || originOf(requestingOrigin) || requestingOrigin,
       embedder: originOf(contents.getURL()),
       mediaTypes: mediaType === "video" || mediaType === "audio" ? [mediaType] : [],
     });
+    // Asking for a prompt needs the patched electron that understands the answer. Windows
+    // runs an unpatched build, which reads any string as a grant, so deny there instead.
+    if (answer === "prompt" && process.platform === "win32") return false;
+    return answer;
   });
 
   target.webRequest.onBeforeRequest({ urls: ["file://*", "file://*/*"] }, (details, callback) => {
