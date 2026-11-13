@@ -76,12 +76,16 @@ function electronBinary(): string {
   const dist = path.resolve(__dirname, "..", "electron", "dist");
   if (!fs.existsSync(path.join(dist, ".zenbu-electron-sha256"))) {
     fail(
-      "the patched electron build is not installed. Run `node node_modules/@zenbu-labs/pixel/scripts/postinstall.mjs` (npm normally runs it for you on install).",
+      "the electron build is not installed. Run `node node_modules/@zenbu-labs/pixel/scripts/postinstall.mjs` (npm normally runs it for you on install).",
     );
   }
-  return process.platform === "darwin"
-    ? path.join(dist, "Electron.app", "Contents", "MacOS", "pixel")
-    : path.join(dist, "pixel");
+  if (process.platform === "darwin") return path.join(dist, "Electron.app", "Contents", "MacOS", "pixel");
+  // Windows runs upstream electron, which keeps its own name. It is unpatched, so the
+  // behaviour the patches add is absent: cross process frames route input through the
+  // unpatched path, permission prompts never reach the session handler, and there is no
+  // media capture signal. A patched win32 build has to come from CI, not a local machine.
+  if (process.platform === "win32") return path.join(dist, "electron.exe");
+  return path.join(dist, "pixel");
 }
 
 function logFile(appDir: string): string {

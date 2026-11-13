@@ -18,6 +18,7 @@ const platforms = {
   "darwin-x64": "darwin-x64",
   "linux-x64": "linux-x64",
   "linux-arm64": "linux-arm64",
+  "win32-x64": "win32-x64",
 };
 const platform = platforms[`${process.platform}-${process.arch}`];
 if (!platform) {
@@ -27,12 +28,18 @@ if (!platform) {
 
 // Patched electron builds are published as electron-v<version> releases. Newer ones live on
 // the terminal-browser repo, where pixel now lives; older ones stayed on the archived pixel repo.
+// No patched build is published for Windows, so it falls back to upstream electron,
+// which publishes its assets under the same names. The patches are not applied there,
+// so anything they add is missing: see the note on electronBinary in bin.ts.
+const stock = platform === "win32-x64";
 const mirrors = process.env.PIXEL_ELECTRON_MIRROR
   ? [process.env.PIXEL_ELECTRON_MIRROR]
-  : [
-      `https://github.com/zenbu-labs/terminal-browser/releases/download/electron-v${version}`,
-      `https://github.com/zenbu-labs/pixel/releases/download/electron-v${version}`,
-    ];
+  : stock
+    ? [`https://github.com/electron/electron/releases/download/v${version}`]
+    : [
+        `https://github.com/zenbu-labs/terminal-browser/releases/download/electron-v${version}`,
+        `https://github.com/zenbu-labs/pixel/releases/download/electron-v${version}`,
+      ];
 let mirror = mirrors[0];
 const zipName = `electron-v${version}-${platform}.zip`;
 
@@ -148,7 +155,9 @@ try {
   fs.writeFileSync(zip, bytes);
   const unpacked = path.join(tmp, "app");
   fs.mkdirSync(unpacked);
-  execFileSync("unzip", ["-q", zip, "-d", unpacked], { stdio: "inherit" });
+  // Windows has no unzip, but its bundled bsdtar reads zips.
+  if (process.platform === "win32") execFileSync("tar", ["-xf", zip, "-C", unpacked], { stdio: "inherit" });
+  else execFileSync("unzip", ["-q", zip, "-d", unpacked], { stdio: "inherit" });
   const stamped = fs.readFileSync(path.join(unpacked, "version"), "utf8").trim();
   if (stamped !== version) {
     throw new Error(`fetched electron stamps itself ${stamped}, expected ${version}`);
