@@ -155,9 +155,15 @@ try {
   fs.writeFileSync(zip, bytes);
   const unpacked = path.join(tmp, "app");
   fs.mkdirSync(unpacked);
-  // Windows has no unzip, but its bundled bsdtar reads zips.
-  if (process.platform === "win32") execFileSync("tar", ["-xf", zip, "-C", unpacked], { stdio: "inherit" });
-  else execFileSync("unzip", ["-q", zip, "-d", unpacked], { stdio: "inherit" });
+  if (process.platform === "win32") {
+    // Windows has no unzip. The tar it ships is bsdtar, which reads zips, but a shell's
+    // PATH can put GNU tar first and that cannot read zips at all, so name bsdtar directly.
+    const bundled = path.join(process.env.SystemRoot ?? "C:/Windows", "System32", "tar.exe");
+    const bsdtar = fs.existsSync(bundled) ? bundled : "tar";
+    execFileSync(bsdtar, ["-xf", zip, "-C", unpacked], { stdio: "inherit" });
+  } else {
+    execFileSync("unzip", ["-q", zip, "-d", unpacked], { stdio: "inherit" });
+  }
   const stamped = fs.readFileSync(path.join(unpacked, "version"), "utf8").trim();
   if (stamped !== version) {
     throw new Error(`fetched electron stamps itself ${stamped}, expected ${version}`);
