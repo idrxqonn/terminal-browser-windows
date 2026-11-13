@@ -14,7 +14,13 @@ execFileSync("cargo", ["build", "-p", "pixel-node", ...(release ? ["--release"] 
 });
 
 const targetDir = process.env.CARGO_TARGET_DIR ?? path.join(engineDir, "target");
-const library = process.platform === "darwin" ? "libpixel_node.dylib" : "libpixel_node.so";
+// Windows drops the lib prefix and names cdylibs .dll.
+const library =
+  process.platform === "darwin"
+    ? "libpixel_node.dylib"
+    : process.platform === "win32"
+      ? "pixel_node.dll"
+      : "libpixel_node.so";
 const built = path.join(targetDir, release ? "release" : "debug", library);
 
 fs.mkdirSync(outDir, { recursive: true });

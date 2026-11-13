@@ -85,6 +85,7 @@ fn postscript_name(face: &Face) -> Option<String> {
 
 // Font files stay mapped for the life of the process; the system shares their pages
 // with every other app, so even large emoji and CJK collections cost little memory.
+#[cfg(not(windows))]
 #[allow(unsafe_code)]
 fn map_file(path: &Path) -> Option<&'static [u8]> {
     let file = std::fs::File::open(path).ok()?;
@@ -106,6 +107,20 @@ fn map_file(path: &Path) -> Option<&'static [u8]> {
     .ok()?;
     // SAFETY: the mapping is `len` bytes long and is never unmapped.
     Some(unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) })
+}
+
+// Windows has no mmap syscall, so memmap2 wraps CreateFileMapping to keep the same
+// shared-pages behaviour. The mapping is leaked to match the lifetime above.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn map_file(path: &Path) -> Option<&'static [u8]> {
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: a read-only mapping of a system font file, which is not rewritten in place.
+    let mapping = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+    if mapping.is_empty() {
+        return None;
+    }
+    Some(&Box::leak(Box::new(mapping))[..])
 }
 
 pub fn advance(ch: char, px: f32) -> Option<f32> {
