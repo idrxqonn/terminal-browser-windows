@@ -14,6 +14,7 @@ pub(crate) struct HostFrame<'a> {
     pub(crate) cell: Option<(u32, u32)>,
 }
 
+#[cfg(unix)]
 pub(crate) fn frame(frame: HostFrame<'_>) -> Value {
     json!({
         "type": "frame",

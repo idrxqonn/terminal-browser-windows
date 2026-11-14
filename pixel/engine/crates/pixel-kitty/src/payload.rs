@@ -1,12 +1,15 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use crate::{FrameTransport, Kitty, fill_shm, open_shm};
+use crate::{FrameTransport, Kitty};
+#[cfg(unix)]
+use crate::{fill_shm, open_shm};
 
 const HANDOFF_STALE_AFTER: Duration = Duration::from_secs(3);
 const HANDOFF_MAX_PENDING: usize = 4096;
 
 pub(super) enum Payload {
+    #[cfg(unix)]
     Shm(String),
     File(std::path::PathBuf),
 }
@@ -14,6 +17,7 @@ pub(super) enum Payload {
 impl Payload {
     fn remove(self) {
         match self {
+            #[cfg(unix)]
             Payload::Shm(name) => {
                 let _ = rustix::shm::unlink(&name);
             }
@@ -64,10 +68,12 @@ impl Payloads {
 }
 
 impl Kitty {
+    #[cfg(unix)]
     pub(super) fn shm_name(&self, seq: u64) -> String {
         format!("/px-{}-{}-{seq}", std::process::id(), self.terminal_id)
     }
 
+    #[cfg(unix)]
     pub(super) fn shm_probe_name(&self) -> String {
         format!("/px-{}-{}-probe", std::process::id(), self.terminal_id)
     }
@@ -80,6 +86,7 @@ impl Kitty {
         ))
     }
 
+    #[cfg(unix)]
     fn hand_off_shm_with(&mut self, len: usize, fill: impl FnOnce(&mut [u8])) -> io::Result<String> {
         let prefix = self.shm_name(0);
         let pool = self.shm_pool.get_or_insert_with(|| crate::shm_pool::ShmPool::new(prefix));
@@ -103,6 +110,7 @@ impl Kitty {
         Ok(name)
     }
 
+    #[cfg(unix)]
     pub(crate) fn hand_off_shm(&mut self, data: &[u8]) -> io::Result<String> {
         self.hand_off_shm_with(data.len(), |out| out.copy_from_slice(data))
     }
@@ -117,7 +125,10 @@ impl Kitty {
 
     pub(crate) fn patch_medium(&self) -> Option<crate::kitty::Medium> {
         match self.transport {
-            FrameTransport::Inline | FrameTransport::Host => None,
+            FrameTransport::Inline => None,
+            #[cfg(unix)]
+            FrameTransport::Host => None,
+            #[cfg(unix)]
             FrameTransport::Shared => Some(crate::kitty::Medium::Shared),
             FrameTransport::File => Some(crate::kitty::Medium::Temporary),
         }
@@ -130,7 +141,10 @@ impl Kitty {
         fill: impl FnOnce(&mut [u8]),
     ) -> io::Result<String> {
         match medium {
+            #[cfg(unix)]
             crate::kitty::Medium::Shared => self.hand_off_shm_with(len, fill),
+            #[cfg(windows)]
+            crate::kitty::Medium::Shared => Err(io::Error::from(io::ErrorKind::Unsupported)),
             crate::kitty::Medium::File | crate::kitty::Medium::Temporary => {
                 let mut data = vec![0u8; len];
                 fill(&mut data);
@@ -140,12 +154,22 @@ impl Kitty {
     }
 
     pub(crate) fn has_ready_payload(&self, medium: crate::kitty::Medium, len: usize) -> bool {
-        medium != crate::kitty::Medium::Shared || self.shm_pool.as_ref().is_some_and(|pool| pool.has_ready(len))
+        #[cfg(unix)]
+        return medium != crate::kitty::Medium::Shared
+            || self.shm_pool.as_ref().is_some_and(|pool| pool.has_ready(len));
+        #[cfg(windows)]
+        {
+            let _ = len;
+            medium != crate::kitty::Medium::Shared
+        }
     }
 
     pub(crate) fn hand_off_frame(&mut self, pixels: &[u8]) -> io::Result<Option<(crate::kitty::Medium, String)>> {
         Ok(match self.transport {
-            FrameTransport::Inline | FrameTransport::Host => None,
+            FrameTransport::Inline => None,
+            #[cfg(unix)]
+            FrameTransport::Host => None,
+            #[cfg(unix)]
             FrameTransport::Shared => Some((crate::kitty::Medium::Shared, self.hand_off_shm(pixels)?)),
             FrameTransport::File => Some((crate::kitty::Medium::File, self.write_frame_file(pixels)?)),
         })

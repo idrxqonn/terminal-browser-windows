@@ -9,8 +9,9 @@ mod kitty;
 pub mod native;
 mod payload;
 mod present;
+#[cfg(unix)]
 mod shm_pool;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod transport_tests;
 mod wrapper;
 
@@ -99,6 +100,7 @@ pub struct Kitty {
     highlight_transmits: bool,
     present_at: Option<Instant>,
     ready_at: Option<Instant>,
+    #[cfg(unix)]
     shm_pool: Option<shm_pool::ShmPool>,
     overlay: present::Overlay,
     flashes: present::Flashes,
@@ -137,7 +139,9 @@ impl Kitty {
                 kitty.embedded = true;
                 kitty.transport = match transport.as_deref() {
                     Some("file") => FrameTransport::File,
+                    #[cfg(unix)]
                     Some("shm") | Some("shared") => FrameTransport::Shared,
+                    #[cfg(unix)]
                     Some("host") => FrameTransport::Host,
                     _ => FrameTransport::Inline,
                 };
@@ -189,6 +193,7 @@ impl Kitty {
             highlight_transmits: false,
             present_at: None,
             ready_at: None,
+            #[cfg(unix)]
             shm_pool: None,
             overlay: present::Overlay::default(),
             flashes: present::Flashes::default(),
@@ -234,6 +239,7 @@ impl Kitty {
 
     pub fn close(&mut self) {
         if self.embedded {
+            #[cfg(unix)]
             if self.transport == FrameTransport::Host {
                 self.payloads.remove_all();
                 return;
@@ -253,6 +259,7 @@ impl Kitty {
             .var("TERMINAL_BROWSER_FRAMES")
             .and_then(|value| match value.trim() {
                 "file" => Some(FrameTransport::File),
+                #[cfg(unix)]
                 "shared" | "shm" => Some(FrameTransport::Shared),
                 "inline" => Some(FrameTransport::Inline),
                 _ => None,
@@ -283,6 +290,7 @@ impl Kitty {
 
     fn probe_frames(&mut self, tty: &mut dyn Tty) -> io::Result<FrameProbe> {
         let shared = self.probe_shared_memory(tty)?;
+        #[cfg(unix)]
         if shared == Some(true) {
             pixel_core::logging::info("terminal", "frames go through shared memory");
             return Ok(FrameProbe::Accepted(FrameTransport::Shared));
@@ -342,6 +350,12 @@ impl Kitty {
         Ok(reply)
     }
 
+    #[cfg(windows)]
+    fn probe_shared_memory(&mut self, _tty: &mut dyn Tty) -> io::Result<Option<bool>> {
+        Ok(None)
+    }
+
+    #[cfg(unix)]
     fn probe_shared_memory(&mut self, tty: &mut dyn Tty) -> io::Result<Option<bool>> {
         let name = self.shm_probe_name();
         if write_shm(&name, &[0, 0, 0, 255]).is_err() {
@@ -489,6 +503,7 @@ impl Kitty {
     }
 
     fn draw_embedded(&mut self, tty: &mut dyn Tty, canvas: &Canvas) -> io::Result<usize> {
+        #[cfg(unix)]
         if self.transport == FrameTransport::Host {
             return self.hand_frame_to_host(tty, canvas);
         }
@@ -519,6 +534,7 @@ impl Kitty {
         Ok(frame.len())
     }
 
+    #[cfg(unix)]
     fn hand_frame_to_host(&mut self, tty: &mut dyn Tty, canvas: &Canvas) -> io::Result<usize> {
         let (cols, rows) = self.grid_for(canvas);
         let generation = self.frame_seq;
@@ -651,6 +667,7 @@ fn gate_config() -> &'static GateConfig {
     })
 }
 
+#[cfg(unix)]
 #[allow(unsafe_code)]
 fn unread_output_of(output: &Output) -> Option<usize> {
     use rustix::fd::AsRawFd as _;
@@ -661,6 +678,13 @@ fn unread_output_of(output: &Output) -> Option<usize> {
     (rc == 0).then(|| count.max(0) as usize)
 }
 
+// Windows cannot report how much of the tty queue is still unwritten. None means callers
+// write the frame straight out instead of waiting for the queue to drain.
+#[cfg(windows)]
+fn unread_output_of(_output: &Output) -> Option<usize> {
+    None
+}
+
 const HERDR_RETRY_MIN: Duration = Duration::from_secs(1);
 const HERDR_RETRY_MAX: Duration = Duration::from_secs(10);
 
@@ -668,8 +692,10 @@ const HERDR_RETRY_MAX: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameTransport {
     File,
+    #[cfg(unix)]
     Shared,
     Inline,
+    #[cfg(unix)]
     Host,
 }
 
@@ -724,6 +750,8 @@ pub(crate) struct FrameFile {
     path: std::path::PathBuf,
     map: std::ptr::NonNull<u8>,
     len: usize,
+    #[cfg(windows)]
+    mapping: Option<memmap2::MmapMut>,
 }
 
 // SAFETY: the mapping is owned by this value alone, so moving it to another thread is fine.
@@ -733,35 +761,48 @@ unsafe impl Send for FrameFile {}
 #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
 impl FrameFile {
     pub(crate) fn create(path: std::path::PathBuf, len: usize) -> io::Result<Self> {
-        use std::os::unix::fs::OpenOptionsExt;
         let _ = std::fs::remove_file(&path);
-        let file = std::fs::File::options()
-            .mode(0o600)
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        rustix::fs::ftruncate(&file, len as u64)?;
-        let map = unsafe {
-            rustix::mm::mmap(
-                std::ptr::null_mut(),
-                len,
-                rustix::mm::ProtFlags::READ | rustix::mm::ProtFlags::WRITE,
-                rustix::mm::MapFlags::SHARED,
-                &file,
-                0,
-            )?
-        };
-        let map = std::ptr::NonNull::new(map.cast::<u8>())
-            .ok_or_else(|| io::Error::other("frame file mapped to nothing"))?;
-        unsafe { std::ptr::write_bytes(map.as_ptr(), 0, len) };
-        Ok(Self { path, map, len })
+        let mut options = std::fs::File::options();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
+        let nothing = || io::Error::other("frame file mapped to nothing");
+        #[cfg(unix)]
+        {
+            rustix::fs::ftruncate(&file, len as u64)?;
+            let map = unsafe {
+                rustix::mm::mmap(
+                    std::ptr::null_mut(),
+                    len,
+                    rustix::mm::ProtFlags::READ | rustix::mm::ProtFlags::WRITE,
+                    rustix::mm::MapFlags::SHARED,
+                    &file,
+                    0,
+                )?
+            };
+            let map = std::ptr::NonNull::new(map.cast::<u8>()).ok_or_else(nothing)?;
+            unsafe { std::ptr::write_bytes(map.as_ptr(), 0, len) };
+            Ok(Self { path, map, len })
+        }
+        #[cfg(windows)]
+        {
+            file.set_len(len as u64)?;
+            let mut mapping = unsafe { memmap2::MmapMut::map_mut(&file)? };
+            let map = std::ptr::NonNull::new(mapping.as_mut_ptr()).ok_or_else(nothing)?;
+            unsafe { std::ptr::write_bytes(map.as_ptr(), 0, len) };
+            Ok(Self { path, map, len, mapping: Some(mapping) })
+        }
     }
 
     pub(crate) fn write(&mut self, data: &[u8]) {
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.map.as_ptr(), self.len) };
     }
 
+    #[cfg(unix)]
     pub(crate) fn write_bgra(&mut self, data: &[u8]) {
         use rayon::prelude::*;
         let len = self.len.min(data.len());
@@ -779,10 +820,12 @@ impl FrameFile {
             });
     }
 
+    #[cfg(unix)]
     pub(crate) fn len(&self) -> usize {
         self.len
     }
 
+    #[cfg(unix)]
     pub(crate) fn path(&self) -> &std::path::Path {
         &self.path
     }
@@ -791,19 +834,25 @@ impl FrameFile {
 #[allow(unsafe_code, clippy::undocumented_unsafe_blocks)]
 impl Drop for FrameFile {
     fn drop(&mut self) {
+        #[cfg(unix)]
         unsafe {
             let _ = rustix::mm::munmap(self.map.as_ptr().cast(), self.len);
         }
+        // Windows refuses to delete a file while a mapped view of it is open.
+        #[cfg(windows)]
+        drop(self.mapping.take());
         let _ = std::fs::remove_file(&self.path);
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn write_shm(name: &str, data: &[u8]) -> io::Result<()> {
     let fd = open_shm(name, data.len())?;
     fill_shm(&fd, data.len(), |out| out.copy_from_slice(data))
 }
 
 
+#[cfg(unix)]
 fn open_shm(name: &str, len: usize) -> io::Result<rustix::fd::OwnedFd> {
     let fd = rustix::shm::open(
         name,
@@ -814,6 +863,7 @@ fn open_shm(name: &str, len: usize) -> io::Result<rustix::fd::OwnedFd> {
     Ok(fd)
 }
 
+#[cfg(unix)]
 #[allow(unsafe_code)]
 fn fill_shm(fd: &rustix::fd::OwnedFd, len: usize, fill: impl FnOnce(&mut [u8])) -> io::Result<()> {
     unsafe {

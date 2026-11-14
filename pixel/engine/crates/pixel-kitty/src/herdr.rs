@@ -1,13 +1,22 @@
-use std::io::{self, BufRead, BufReader, Write};
+use std::io;
+#[cfg(unix)]
+use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::Duration;
 
 use pixel_raster::Canvas;
+#[cfg(unix)]
 use crate::FrameFile;
 
+#[cfg(unix)]
 const ACK_TIMEOUT: Duration = Duration::from_secs(12);
+#[cfg(unix)]
 const OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(unix)]
 const SLOTS: u64 = 3;
 
 #[derive(Clone, Debug)]
@@ -25,6 +34,26 @@ impl HerdrTarget {
     }
 }
 
+#[cfg(windows)]
+pub(crate) struct Herdr(std::convert::Infallible);
+
+// herdr hosts panes over a unix socket, so there is never one to reach on Windows.
+#[cfg(windows)]
+impl Herdr {
+    pub(crate) fn open(_target: &HerdrTarget, _instance: u64) -> Option<Self> {
+        None
+    }
+
+    pub(crate) fn cell(&self) -> (u32, u32) {
+        match self.0 {}
+    }
+
+    pub(crate) fn present(&mut self, _canvas: &Canvas) -> io::Result<usize> {
+        match self.0 {}
+    }
+}
+
+#[cfg(unix)]
 pub(crate) struct Herdr {
     frames: BufReader<UnixStream>,
     directory: PathBuf,
@@ -37,6 +66,7 @@ pub(crate) struct Herdr {
     seq: u64,
 }
 
+#[cfg(unix)]
 impl Herdr {
     pub(crate) fn open(target: &HerdrTarget, instance: u64) -> Option<Self> {
         let mut herdr = Self::connect(&target.pane, &target.socket)?;
@@ -151,6 +181,7 @@ impl Herdr {
     }
 }
 
+#[cfg(unix)]
 fn request(socket: &str, line: &str) -> io::Result<String> {
     let stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(OPEN_TIMEOUT))?;
@@ -159,12 +190,14 @@ fn request(socket: &str, line: &str) -> io::Result<String> {
     read_line(&mut reader)
 }
 
+#[cfg(unix)]
 fn write_line(stream: &mut UnixStream, line: &str) -> io::Result<()> {
     stream.write_all(line.as_bytes())?;
     stream.write_all(b"\n")?;
     stream.flush()
 }
 
+#[cfg(unix)]
 fn read_line(reader: &mut BufReader<UnixStream>) -> io::Result<String> {
     let mut line = String::new();
     if reader.read_line(&mut line)? == 0 {
@@ -173,10 +206,12 @@ fn read_line(reader: &mut BufReader<UnixStream>) -> io::Result<String> {
     Ok(line)
 }
 
+#[cfg(unix)]
 fn accepted(response: &str) -> bool {
     response.contains(r#""result""#) && !response.contains(r#""error""#)
 }
 
+#[cfg(unix)]
 fn quote(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -191,11 +226,13 @@ fn quote(value: &str) -> String {
     out
 }
 
+#[cfg(unix)]
 fn value_after<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     let at = json.find(&format!("\"{key}\":"))? + key.len() + 3;
     Some(json[at..].trim_start())
 }
 
+#[cfg(unix)]
 fn field_str(json: &str, key: &str) -> Option<String> {
     let rest = value_after(json, key)?.strip_prefix('"')?;
     let mut out = String::new();
@@ -210,13 +247,14 @@ fn field_str(json: &str, key: &str) -> Option<String> {
     None
 }
 
+#[cfg(unix)]
 fn field_u32(json: &str, key: &str) -> Option<u32> {
     let rest = value_after(json, key)?;
     let end = rest.find(|c: char| !c.is_ascii_digit())?;
     rest[..end].parse().ok()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -364,7 +402,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod shared_process_tests {
     use super::*;
     use pixel_raster::Canvas;

@@ -340,6 +340,7 @@ mod tests {
         let kitty = Identity::Kitty { version: (0, 46, 0) };
         let local = |forced, transport, identity| select(forced, false, transport, identity, true, false);
         assert_eq!(local(None, FrameTransport::File, ghostty), Presenter::Patched);
+        #[cfg(unix)]
         assert_eq!(local(None, FrameTransport::Shared, kitty), Presenter::Patched);
         assert_eq!(local(None, FrameTransport::File, old_ghostty), Presenter::Full);
         assert_eq!(local(None, FrameTransport::File, Identity::Unknown), Presenter::Full);
@@ -349,6 +350,7 @@ mod tests {
         assert_eq!(local(Some(" patched "), FrameTransport::File, Identity::Unknown), Presenter::Patched);
         assert_eq!(local(Some("patched"), FrameTransport::Inline, ghostty), Presenter::Patched);
         assert_eq!(local(Some("animation"), FrameTransport::Inline, kitty), Presenter::Full, "kitty never animates, even when asked");
+        #[cfg(unix)]
         assert_eq!(local(Some("animation"), FrameTransport::Shared, kitty), Presenter::Patched, "kitty never animates, even when asked");
         assert_eq!(local(Some("animation"), FrameTransport::Inline, ghostty), Presenter::Animation);
         assert_eq!(

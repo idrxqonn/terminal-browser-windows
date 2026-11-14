@@ -829,6 +829,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "libc",
+ "memmap2",
  "miniz_oxide",
  "pixel-core",
  "pixel-raster",
